@@ -15,9 +15,49 @@ how to use the page table and disk interfaces.
 #include <string.h>
 #include <errno.h>
 
+int nfilled = 0;
+const char *algo;
+struct disk *disk;
+
+void random_algo(){
+
+}
+
+void fifo_algo(){
+
+}
+
+void custom_algo(){
+
+}
+
 void page_fault_handler( struct page_table *pt, int page )
 {
 	printf("page fault on page #%d\n",page);
+	char buffer[PAGE_SIZE];
+
+	unsigned char *physmem = page_table_get_physmem(pt);
+
+	int npages = page_table_get_npages(pt);
+	int nframes = page_table_get_nframes(pt);
+	if(nfilled < nframes){
+		printf("adding new page\n");
+		page_table_set_entry(pt,page,nfilled,PROT_READ);
+		disk_read(disk,page,&physmem[nfilled*PAGE_SIZE]);
+		nfilled++;
+		page_table_print(pt);
+		return;
+	} else {
+
+		printf("replacing a page\n");
+		if(!strcmp(algo,"rand")){
+			random_algo();
+		}else if(!strcmp(algo,"fifo")){
+			fifo_algo();
+		}else  if(!strcmp(algo,"custom")){
+			custom_algo();
+		}
+	}
 	exit(1);
 }
 
@@ -30,9 +70,11 @@ int main( int argc, char *argv[] )
 
 	int npages = atoi(argv[1]);
 	int nframes = atoi(argv[2]);
+	algo = argv[3];
 	const char *program = argv[4];
 
-	struct disk *disk = disk_open("myvirtualdisk",npages);
+	//struct disk *disk = disk_open("myvirtualdisk",npages);
+	disk = disk_open("myvirtualdisk",npages);
 	if(!disk) {
 		fprintf(stderr,"couldn't create virtual disk: %s\n",strerror(errno));
 		return 1;
