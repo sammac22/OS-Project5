@@ -16,49 +16,116 @@ how to use the page table and disk interfaces.
 #include <errno.h>
 
 int nfilled = 0;
+int dr_count = 0; 	//disk read count
+int dw_count =0;	//disk write count
+int pg_faults = 0;	//page fault count
+int sam_count = 0;	//count for fifo algorithm
+
+int * frame_table;
+
 const char *algo;
 struct disk *disk;
 
-void random_algo(){
 
+int random_algo(int nframes){
+	return rand() % nframes;
 }
 
-void fifo_algo(){
+int fifo_algo(int nframes){
+	if (sam_count<nframes){
+		return sam_count++;
+	}
 
+	sam_count=0;
+	return sam_count++;
 }
 
-void custom_algo(){
+int custom_algo(int nframes, struct page_table *pt){
+	int checked = 0;
+	int f; //frame
+	int bit_check;
+	while(1){
+		if(checked >= nframes){
+			return random_algo(nframes);
+		}
+		if(sam_count > nframes){
+			sam_count = 0;
+		}
+		page_table_get_entry(pt,sam_count,&f,&bit_check);
+		if((PROT_WRITE & bit_check)==0){
+			checked++;
+			sam_count++;
+			continue;
+		}
+		return sam_count++;
+	}
 
 }
 
 void page_fault_handler( struct page_table *pt, int page )
 {
-	printf("page fault on page #%d\n",page);
-	char buffer[PAGE_SIZE];
+	pg_faults = pg_faults+1;
+	//printf("page fault on page #%d\n",page);
 
 	unsigned char *physmem = page_table_get_physmem(pt);
 
 	int npages = page_table_get_npages(pt);
 	int nframes = page_table_get_nframes(pt);
-	if(nfilled < nframes){
-		printf("adding new page\n");
-		page_table_set_entry(pt,page,nfilled,PROT_READ);
-		disk_read(disk,page,&physmem[nfilled*PAGE_SIZE]);
-		nfilled++;
-		page_table_print(pt);
-		return;
-	} else {
 
-		printf("replacing a page\n");
-		if(!strcmp(algo,"rand")){
-			random_algo();
-		}else if(!strcmp(algo,"fifo")){
-			fifo_algo();
-		}else  if(!strcmp(algo,"custom")){
-			custom_algo();
+	int f; //frame
+	int bit_check;
+
+	page_table_get_entry(pt,page,&f,&bit_check);
+	if(bit_check == 0){
+		for(nfilled=0; nfilled < nframes; nfilled++){
+			if(frame_table[nfilled]==-1){
+				frame_table[nfilled]= page;
+				page_table_set_entry(pt,page,nfilled,PROT_READ);
+				//second chance
+				disk_read(disk,page,&physmem[nfilled*PAGE_SIZE]);
+				dr_count=dr_count+1;
+				return;
+			}
 		}
+		//remove represents the frame of the page I am going to evict
+		int remove = -1;
+		//printf("replacing a page\n");
+
+		if(!strcmp(algo,"rand")){
+			remove = random_algo(nframes);
+		}else if(!strcmp(algo,"fifo")){
+			remove = fifo_algo(nframes);
+		}else  if(!strcmp(algo,"custom")){
+			remove = custom_algo(nframes,pt);
+		}
+
+		int throw_out_page = frame_table[remove];
+		int bits;
+
+		page_table_get_entry(pt,throw_out_page,&remove,&bits);
+		if((PROT_WRITE & bits) != 0){
+			disk_write(disk,throw_out_page,&physmem[remove*PAGE_SIZE]);
+			dw_count=dw_count+1;
+		}
+		// read new page in its place
+		disk_read(disk,page,&physmem[remove*PAGE_SIZE]);
+		dr_count=dr_count+1;
+
+		//update page table (2 entries)
+		page_table_set_entry(pt,page,remove,PROT_READ);
+		page_table_set_entry(pt,throw_out_page, 0 ,0); //dthain apparently does this
+		frame_table[remove] =page;
+		//done
+		return;
 	}
-	exit(1);
+	else if((PROT_WRITE & bit_check)==0){
+		page_table_set_entry(pt,page,f,bit_check | PROT_WRITE);
+		// buffer2[f]=1;
+		// second chance
+	}
+	else if((PROT_EXEC & bit_check) == 0){
+		page_table_set_entry(pt,page,f,bit_check | PROT_EXEC);
+	}
 }
 
 int main( int argc, char *argv[] )
@@ -70,6 +137,11 @@ int main( int argc, char *argv[] )
 
 	int npages = atoi(argv[1]);
 	int nframes = atoi(argv[2]);
+	frame_table = malloc(sizeof(int)*nframes);
+	int i;
+	for(i=0; i<nframes;i++){
+		frame_table[i]=-1;
+	}
 	algo = argv[3];
 	const char *program = argv[4];
 
@@ -110,6 +182,8 @@ int main( int argc, char *argv[] )
 
 	page_table_delete(pt);
 	disk_close(disk);
+	printf("pg faults: %d\n", pg_faults);
 
 	return 0;
+}
 }
